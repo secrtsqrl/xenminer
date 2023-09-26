@@ -23,6 +23,6 @@ sub main {
     my $dirname = dirname(__FILE__);
     mkdir "$dirname/results";
     my $gcp = eval { run ('sudo dmidecode -s system-product-name 2>/dev/null | grep "Google Compute Engine"') };
-    run ("findmnt ~/xenminer/results || /usr/bin/gcsfuse xenminer ~/xenminer/results") if $gcp;
-    run ("while [ true ]; do (TQDM_DISABLE=1 $dirname/venv/bin/python -u $dirname/miner.py >> $dirname/results/$hostname.$_ 2>&1; sleep 1); done &") for 1..$cores;
+    run ("findmnt $dirname/results || /usr/bin/gcsfuse xenminer $dirname/results") if $gcp;
+    run ("while [ true ]; do (cd $dirname; TQDM_DISABLE=1 $dirname/venv/bin/python -u $dirname/miner.py >> $dirname/results/$hostname.$_ 2>&1; sleep 1); done &") for 1..$cores;
 }
