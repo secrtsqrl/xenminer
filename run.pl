@@ -1,0 +1,28 @@
+#!/usr/bin/perl
+use warnings;
+use strict;
+use Sys::Hostname qw(hostname);
+use File::Basename;
+
+main();
+exit 0;
+
+sub cores {
+    chomp(my $cores = `cat /proc/cpuinfo | grep -c processor`);
+    return $cores;
+}
+
+sub run {
+    my $rc = system(@_);
+    $rc == 0 or die "Failed to run @_";
+}
+
+sub main {
+    my $cores = cores();
+    my $hostname = hostname();
+    my $dirname = dirname(__FILE__);
+    mkdir "$dirname/results";
+    my $gcp = eval { run ('sudo dmidecode -s system-product-name 2>/dev/null | grep "Google Compute Engine"') };
+    run ("findmnt ~/xenminer/results || /usr/bin/gcsfuse xenminer ~/xenminer/results") if $gcp;
+    run ("while [ true ]; do (TQDM_DISABLE=1 $dirname/venv/bin/python -u $dirname/miner.py >> $dirname/results/$hostname.$_ 2>&1; sleep 1); done &") for 1..$cores;
+}
