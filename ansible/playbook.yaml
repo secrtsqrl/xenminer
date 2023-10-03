@@ -1,0 +1,87 @@
+- name: xenium gpu miner
+  hosts: '{{ gpu_hosts }}'
+  tasks:
+    - name: install pyenv
+      shell: curl https://pyenv.run | bash
+      args:
+        creates: ~/.pyenv
+
+    - name: setup .bashrc
+      blockinfile:
+        path: ~/.bashrc
+        block: |
+          export PYENV_ROOT="$HOME/.pyenv"
+          command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
+          eval "$(pyenv init -)"
+
+    - name: build environment
+      apt:
+        update_cache: true
+        pkg:
+          - build-essential
+          - libssl-dev
+          - zlib1g-dev
+          - libbz2-dev
+          - libreadline-dev
+          - libsqlite3-dev
+          - curl
+          - libncursesw5
+          - xz-utils
+          - tk-dev
+          - libxml2-dev
+          - libxmlsec1-dev
+          - libffi-dev
+          - liblzma-dev
+          - cmake
+          - ocl-icd-opencl-dev
+          - tmux
+
+    - name: install python 3.11.5
+      shell:
+        . ~/.bashrc &&
+        pyenv install -s 3.11.5 &&
+        pyenv global 3.11.5
+
+    - name: git clone XENGPUMiner
+      git:
+        repo: https://github.com/shanhaicoder/XENGPUMiner.git
+        dest: ~/XENGPUMiner
+        force: true
+
+    - name: setup python for XENGPUMiner
+      args:
+        creates: ~/XENGPUMiner/venv
+      shell:
+        chdir: ~/XENGPUMiner
+        cmd: |
+          . ~/.bashrc &&
+          python -m venv venv &&
+          venv/bin/pip install -Ur requirements.txt
+
+    - name: Changing perm of build.sh
+      file:
+        dest: ~/XENGPUMiner/build.sh
+        mode: a+x
+
+    - name: run build.sh
+      args:
+        creates: ~/XENGPUMiner/xengpuminer
+      shell:
+        chdir: ~/XENGPUMiner
+        cmd: ./build.sh -cuda_arch sm_{{ cuda }}
+
+    - name: account
+      lineinfile:
+        path: ~/XENGPUMiner/config.conf
+        regexp: '^account ='
+        line: account = 0xe5Df7343d3B6a372d6Bf6B57ba2b6572a26b8e33
+
+    - name: run miner
+      shell:
+        chdir: ~/XENGPUMiner
+        cmd: pgrep -f venv/bin/python miner.py || nohup bash -c "while [ true ]; do venv/bin/python miner.py; sleep 1; done" > miner.log 2>&1 &
+
+    - name: run gpu
+      shell:
+        chdir: ~/XENGPUMiner
+        cmd: pgrep xengpuminer || nohup bash -c "while [ true ]; do ./xengpuminer | tr '\r' '\n' | awk -v N=5 'NR%N==1'; sleep 1; done" > gpu.log 2>&1 &
