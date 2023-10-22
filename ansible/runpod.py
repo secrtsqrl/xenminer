@@ -5,7 +5,7 @@ import sys
 
 CUDA = {
     'NVIDIA A30': 80,
-    'NVIDIA H100': 90,
+    'NVIDIA H100 PCIe': 90,
     'NVIDIA GeForce RTX 4090': 89,
     'NVIDIA GeForce RTX 3090': 86,
     'NVIDIA L40': 89,
@@ -36,7 +36,7 @@ def main():
         try:
             group, hostname, host = pod2ansible(pod)
         except Exception as e:
-            print(f'{pod_id}: {e}', file=sys.stderr)
+            print(f'{e}: {pod}', file=sys.stderr)
             continue
 
         if group in hosts:

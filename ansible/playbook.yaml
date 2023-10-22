@@ -74,14 +74,19 @@
       lineinfile:
         path: ~/XENGPUMiner/config.conf
         regexp: '^account ='
-        line: account = 0xe5Df7343d3B6a372d6Bf6B57ba2b6572a26b8e33
+        line: account = 0x2aD67Dc11A7a31bA5b6221BEf59A6316BC0C7134
 
-    - name: run miner
+    - name: run gpu monitor
       shell:
         chdir: ~/XENGPUMiner
-        cmd: pgrep -f venv/bin/python miner.py || nohup bash -c "while [ true ]; do venv/bin/python miner.py; sleep 1; done" > miner.log 2>&1 &
+        cmd: pgrep -f "^venv/bin/python miner.py$" || nohup bash -c "while [ true ]; do venv/bin/python miner.py; sleep 1; done" > gpu.miner 2>&1 &
 
-    - name: run gpu
+    - name: run gpu miner
       shell:
         chdir: ~/XENGPUMiner
         cmd: pgrep xengpuminer || nohup bash -c "while [ true ]; do ./xengpuminer | tr '\r' '\n' | awk -v N=5 'NR%N==1'; sleep 1; done" > gpu.log 2>&1 &
+
+    # - name: run cpu miners
+    #   shell:
+    #     chdir: ~/XENGPUMiner
+    #     cmd: pgrep -f "^venv/bin/python miner.py --gpu=false$" || nohup bash -c 'for (( i = 1; i <= 7; i += 1 )); do while [ true ]; do venv/bin/python miner.py --gpu=false; done > cpu.$i 2>&1 & done'
