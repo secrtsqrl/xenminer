@@ -1,9 +1,10 @@
 from flask import Flask, request, jsonify, render_template
 from passlib.hash import argon2
-import sqlite3
+import sqlite3, base64
 from datetime import datetime
 import time
 import re
+from web3 import Web3
 
 app = Flask(__name__)
 
@@ -185,7 +186,7 @@ def leaderboard():
     cache_c = cache_conn.cursor()
 
     # Read from the cache table for leaderboard data
-    cache_c.execute("SELECT * FROM cache_table ORDER BY total_blocks DESC LIMIT 500")
+    cache_c.execute("SELECT * FROM cache_table ORDER BY total_blocks DESC")
     results = cache_c.fetchall()
     cache_conn.close()
 
@@ -226,6 +227,44 @@ def leaderboard():
     return render_template('leaderboard4.html', leaderboard=leaderboard,
                            total_attempts_per_second=int(round(total_attempts_per_second, 2) / 1000),
                            latest_rate=latest_rate, latest_miners=latest_miners, difficulty=difficulty)
+
+
+@app.route('/get_balance/<account>', methods=['GET'])
+def get_balance(account):
+    conn = None
+    try:
+        conn = sqlite3.connect('cache.db', timeout=10)
+        cursor = conn.cursor()
+        cursor.execute("SELECT total_blocks FROM cache_table WHERE LOWER(account) = LOWER(?)", (account,))
+        row = cursor.fetchone()
+        if row:
+            balance = row[0] * 10
+            return jsonify({'account': account, 'balance': balance})
+        else:
+            return jsonify({'error': 'No record found for the provided account'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+@app.route('/get_super_blocks/<account>', methods=['GET'])
+def get_super_blocks(account):
+    conn = None
+    try:
+        conn = sqlite3.connect('cache.db', timeout=10)
+        cursor = conn.cursor()
+        cursor.execute("SELECT super_blocks FROM cache_table WHERE LOWER(account) = LOWER(?)", (account,))
+        row = cursor.fetchone()
+        if row:
+            return jsonify({'account': account, 'super_blocks': row[0]})
+        else:
+            return jsonify({'error': 'No record found for the provided account'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 @app.route('/total_blocks', methods=['GET'])
@@ -282,12 +321,118 @@ def check_fourth_element(string):
     match = pattern.search(string)
     return bool(match)
 
+def is_valid_hash(h):
+    """Ensure the input is a hexadecimal hash of the expected length."""
+    return bool(re.match("^[a-fA-F0-9]{64}$", h))
+
+def restore_eip55_address(lowercase_address: str) -> str:
+    # Restore the address using EIP-55 checksum
+    try:
+        checksum_address = Web3.to_checksum_address(lowercase_address)
+        print ("Checksummed address is: ", checksum_address)
+        return True
+    except ValueError as e:
+        # Handle the error in case the address is not a valid Ethereum address
+        print(f"An error occurred: {e}")
+        return False
+
+
+def check_salt_format_and_ethereum_address(hash_to_verify: str) -> bool:
+    # Regular expressions for the expected patterns
+    pattern1 = re.compile(r'WEVOMTAwODIwMjJYRU4')
+    pattern2 = re.compile(r'^[A-Za-z0-9+/]{27}$')
+
+    # Extract the salt part from the hash_to_verify
+    parts = hash_to_verify.split("$")
+    if len(parts) != 6:
+        return False
+    salt = parts[4]
+
+    # Check if the salt matches the first pattern
+    if pattern1.search(salt):
+        print ("Matched old salt, continue")
+        return True
+    else:
+        print("Old Salt False")
+
+    # Check if the salt matches the second pattern and is base64
+    if pattern2.fullmatch(salt):
+        print ("In Pattern2 match")
+        try:
+            # The proper base64 string should have a length that is a multiple of 4.
+            # We need to add padding if necessary.
+            missing_padding = len(salt) % 4
+            if missing_padding:
+                salt += '=' * (4 - missing_padding)
+
+            # Decode the base64 string
+            decoded_bytes = base64.b64decode(salt)
+            decoded_str = decoded_bytes.hex()
+            print("Decoded salt: ", decoded_str)
+
+            # Check if the decoded string is a valid hexadecimal and of a specific length
+            if re.fullmatch(r'[0-9a-fA-F]{40}', decoded_str):  # Ethereum addresses are 40 hex characters long
+                # Construct potential Ethereum address
+                potential_eth_address = '0x' + decoded_str
+                print("Address matched: ", potential_eth_address)
+
+                # Validate Ethereum address checksum
+                if restore_eip55_address(potential_eth_address):
+                    print("Checksum of address is valid")
+                    return True
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return False
+
+    return False
+
+
+@app.route('/get_block', methods=['GET'])
+def get_block():
+    key = request.args.get('key')
+    if not key:
+        return jsonify({"error": "Please provide a key"}), 400
+
+    if not is_valid_hash(key):
+        return jsonify({"error": "Invalid key provided"}), 400
+
+    conn = sqlite3.connect('blocks.db')
+    cursor = conn.cursor()
+
+    # Use a parameterized query to prevent SQL injection
+    cursor.execute("SELECT * FROM blocks WHERE key=?", (key,))
+    data = cursor.fetchone()
+
+    if data is None:
+        # No record was found in the 'blocks' table, try 'xuni' table
+        cursor.execute("SELECT * FROM xuni WHERE key=?", (key,))
+        data = cursor.fetchone()
+
+        if data is None:
+            # Record not found in either table
+            return jsonify({"error": "Data not found for provided key"}), 404
+
+    # Column names for both 'blocks' and 'xuni' tables
+    columns = ['block_id', 'hash_to_verify', 'key', 'account', 'created_at']
+
+    # Convert the tuple data to a dictionary
+    data_dict = dict(zip(columns, data))
+
+    conn.close()
+
+    return jsonify(data_dict), 200
+
 @app.route('/verify', methods=['POST'])
 def verify_hash():
     global account_attempts_batch, blocks_batch
     data = request.json
+    worker_id = data.get('worker_id')
+
+    if not (isinstance(worker_id, str) and len(worker_id) <= 3):
+        worker_id = None  # Set worker_id to None if it's not a valid string of 3 characters or less
+
     hash_to_verify = data.get('hash_to_verify')
-    hash_to_verify = hash_to_verify if (hash_to_verify and len(hash_to_verify) <= 140) else None
+    hash_to_verify = hash_to_verify if (hash_to_verify and len(hash_to_verify) <= 150) else None
     is_xuni_present = re.search('XUNI[0-9]', hash_to_verify[-87:]) is not None
     key = data.get('key')
     key = key if (key and len(key) <= 128) else None
@@ -304,7 +449,8 @@ def verify_hash():
     if not is_hexadecimal(key):
         return jsonify({"error": "Invalid key format"}), 400
 
-    if not check_fourth_element(hash_to_verify):
+    #if not check_fourth_element(hash_to_verify):
+    if not check_salt_format_and_ethereum_address(hash_to_verify):
         return jsonify({"error": "Invalid salt format"}), 400
 
     # Check for missing data
@@ -351,8 +497,8 @@ def verify_hash():
         print (error_message, hash_to_verify[-87:])
         return jsonify({"message": error_message}), 401
 
-    if len(hash_to_verify) > 137:
-        error_message = "Length of hash_to_verify should not be greater than 137 characters."
+    if len(hash_to_verify) > 150:
+        error_message = "Length of hash_to_verify should not be greater than 150 characters."
         print (error_message)
         log_verification_failure(error_message, account)
         return jsonify({"message": error_message}), 401
@@ -392,7 +538,7 @@ def verify_hash():
         except sqlite3.IntegrityError as e:
             error_message = e.args[0] if e.args else "Unknown IntegrityError"
             print(f"Error: {error_message} ", hash_to_verify, key, account)
-            return jsonify({"message": f"Error detected: {error_message}"}), 400
+            return jsonify({"message": f"Block already exists, continue"}), 400
 
         finally: 
             conn.close()
@@ -423,6 +569,28 @@ def store_consensus():
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route('/top_daily_block_miners', methods=['GET'])
+def get_top_blocks():
+    conn = sqlite3.connect('blocks.db')  # Assuming your database file is named blocks.db
+    cursor = conn.cursor()
+
+    query = '''
+        SELECT * FROM AccountBlockCounts
+        ORDER BY num_blocks DESC
+        LIMIT 500
+    '''
+
+    cursor.execute(query)
+    rows = cursor.fetchall()
+
+    # Close the connection
+    conn.close()
+
+    # Convert the rows to a JSON response
+    result = [{"account": row[0], "num_blocks": row[1]} for row in rows]
+    return jsonify(result)
 
 
 @app.route('/latest_blockrate', methods=['GET'])
